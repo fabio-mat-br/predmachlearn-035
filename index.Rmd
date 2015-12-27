@@ -1,0 +1,183 @@
+---
+title: "Practical Machine Learning Assignment"
+author: "Fabio Fogliarini Brolesi"
+date: "27 de dezembro de 2015"
+output: html_document
+---
+# Abstract
+This project aims to predict the manner that the people did the exercises based in a training set and using machine learning algorithms. The data is provided by [1].
+
+#Setup
+First of all, we need to set up some thins in the ```R``` environment:
+```{r, cache=TRUE, cache.path="cache/", tidy=TRUE, results='asis'}
+
+# CLEAR ALL VARIABLES ##########################################################
+rm(list=ls(all=TRUE))
+
+# INITIAL SETS ################################################################# 
+Sys.setlocale("LC_ALL","English")
+options(scipen = 99)
+download_data <- FALSE
+load_data <- TRUE
+file_training <- "pml-training.csv"
+file_testing <- "pml-testing.csv"
+seed <- 1000
+set.seed(seed)
+
+load_libs <- function(list.of.packages){
+  new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+  if(length(new.packages)) install.packages(new.packages)
+  lapply(list.of.packages, require, character.only = TRUE)
+}
+# Count the number of non-NAs in each col.
+naFeatures <- function(x) {
+  as.vector(apply(x, 2, function(x) length(which(!is.na(x)))))
+}
+
+load_libs(c("caret", "rpart", "rpart.plot", "RColorBrewer", "rattle", "randomForest"))
+
+```
+
+# Loading the data
+To load the data, we must first of all, downlad from [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv):
+
+
+```{r, cache=TRUE, cache.path="cache/", tidy=TRUE, results='asis'}
+# DOWNLOAD DATA ################################################################
+if(download_data){
+  url_training <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+  
+  download.file(url=url_training, destfile=file_training, method="curl")
+  url_testing <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  
+  download.file(url = url_testing, destfile=file_testing, method="curl")
+}
+
+if(load_data){
+  load("training.RData")
+  load("testing.RData")
+} else {
+  training <- read.csv(file_training, na.strings=c("NA",""), header=TRUE)
+  save(training, file="training.RData")
+  
+  testing <- read.csv(file_testing, na.strings=c("NA",""), header=TRUE)
+  save(testing, file="testing.RData")
+}
+
+cnames_train <- colnames(training)
+cnames_test <- colnames(testing)
+
+```
+Now, we must to do a feature engineering to correctly create the model.
+```{r, cache=TRUE, cache.path="cache/", tidy=TRUE, results='asis'}
+# FEATURE ENGINEERING ##########################################################
+# Creating a vector of missing data to remove 
+colNAs <- naFeatures(training)
+features_to_remove <- c()
+for (cnt in 1:length(colNAs)) {
+  if (colNAs[cnt] < nrow(training)) {
+    features_to_remove <- c(features_to_remove, cnames_train[cnt])
+  }
+}
+
+# Drop the first 7 columns (they're unnecessary for predicting) and the features with missing data.
+training <- training[,!(names(training) %in% features_to_remove)]
+training <- training[,8:length(colnames(training))]
+
+testing <- testing[,!(names(testing) %in% features_to_remove)]
+testing <- testing[,8:length(colnames(testing))]
+```
+Now, to create a $2$-fold cross validation, we need to divide the data:
+```{r, cache=TRUE, cache.path="cache/", tidy=TRUE, results='asis'}
+folds <- createFolds(y = training$classe, k = 2, list = FALSE)
+training_trainset <- training[folds != 2, ]
+training_testset <- training[folds == 2, ]
+
+# Proportion of data partition that we need to use
+ratio = 0.95
+
+inTrain <- createDataPartition(y = training_trainset$classe, p = ratio, list = FALSE)
+inTest <- createDataPartition(y = training_testset$classe, p = ratio, list = FALSE)
+
+nIndex = 1
+j = 1
+predictor = vector("numeric", length = 0)
+for (i in training) {
+  if (nIndex >= 7 && (class(i) == "numeric" || class(i) == "integer") && sum(is.na(i)) == 0) {
+    predictor[j] <- nIndex
+    j = j + 1
+  }
+  nIndex = nIndex + 1
+}
+
+training_set_A <- training_trainset[inTrain, c(predictor, dim(training)[2])]
+training_set_B <- training_testset[inTest, c(predictor, dim(training)[2])]
+
+training_set_A <- transform(training_set_A, classe = as.factor(classe))
+training_set_B <- transform(training_set_B, classe = as.factor(classe))
+```
+Well, after create the partitions, let's use RPart and Random Forest to evaluate the data and create the models:
+```{r, cache=TRUE, cache.path="cache/", tidy=TRUE, results='markup'}
+#RPART #########################################################################
+set.seed(seed)
+# Creating a model to test with another partition
+modelFitRPart1 <- train(classe ~ ., method = "rpart", data = training_set_A, preProcess=c("center", "scale"), trControl=trainControl(method = "cv", number = 4))
+print(modelFitRPart1$finalModel)
+fancyRpartPlot(modelFitRPart1$finalModel)
+# outputting the results
+predRpart1 <- predict(modelFitRPart1, newdata=training_set_B)
+print(confusionMatrix(predRpart1, training_set_B$classe), digits = 4)
+
+# Creating a model to test with another partition
+modelFitRPart2 <- train(classe ~ ., method = "rpart", data = training_set_B, preProcess=c("center", "scale"), trControl=trainControl(method = "cv", number = 4))
+print(modelFitRPart2$finalModel)
+fancyRpartPlot(modelFitRPart2$finalModel)
+# outputting the results
+predRpart2 <- predict(modelFitRPart2, newdata=training_set_A)
+print(confusionMatrix(predRpart2, training_set_A$classe), digits = 4)
+
+```
+Now, let's use Random Forest to do the prediction and evaluate the results:
+```{r, cache=TRUE, cache.path="cache/", tidy=TRUE, results='markup'}
+#RANDOM FOREST #################################################################
+set.seed(seed)
+modelFitRF1 <- train(classe ~ ., method = "rf", data = training_set_A, preProcess=c("center", "scale"), trControl=trainControl(method = "cv", number = 4))
+print(modelFitRF1$finalModel)
+
+predRF1 <- predict(modelFitRF1, newdata=training_set_B)
+print(confusionMatrix(predRF1, training_set_B$classe), digits = 4)
+
+
+modelFitRF2 <- train(classe ~ ., method = "rf", data = training_set_B, preProcess=c("center", "scale"), trControl=trainControl(method = "cv", number = 4))
+print(modelFitRF2$finalModel)
+
+predRF2 <- predict(modelFitRF2, newdata=training_set_A)
+print(confusionMatrix(predRF2, training_set_A$classe), digits = 4)
+```
+Now, let's apply the best models in our test dataset
+```{r, cache=TRUE, cache.path="cache/", tidy=TRUE, results='markup'}
+# USING MODEL IN THE TRAIN DATASET #############################################
+# RPART 
+print(predict(modelFitRPart2, newdata=testing))
+
+# RANDOM FOREST
+print(predict(modelFitRF1, newdata=testing))
+
+# BELOW, THE INSTRUCTIONS TO CREATE THE FILES TO SUBMIT TO COURSERA
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+answers = predict(modelFitRF1, newdata=testing)
+pml_write_files(answers)
+answers
+```
+# References
+1. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: [http://groupware.les.inf.puc-rio.br/har#wle_paper_section#ixzz3uly8et00](http://groupware.les.inf.puc-rio.br/har#wle_paper_section#ixzz3uly8et00)
+
